@@ -3,12 +3,16 @@
   Description - Designed for special requirement where master switch panel is not easily accessible.
   Requirement -
     > Maintain the device state inside ESP 8266 EEPROM memory.
-  version - 2.0.0
+  version - 3.0.0
  *************************************************************/
-
+// For RTC module (DS1307)
+#include "RTClib.h"
 #include <IRremote.h>
 #include <EEPROM.h>
 
+// D1 and D2 allotted to RTC module DS1307 (I2C support)
+RTC_DS1307 rtc;
+DateTime currentTime;
 // Reciver GPIO pin
 IRrecv IR(D7);
 
@@ -26,11 +30,79 @@ boolean isTubelightOn = false;
 int fanMemAddr = 0;
 int tubeMemAddr = 4;
 
+// Time for various comparision
+struct Time {
+    int hours;
+    int minutes;
+};
+
+struct startEndTime {
+    int startTimeHour;
+    int startTimeMinute;
+    int endTimeHour;
+    int endTimeMinute;
+};
+
+// Active hours - Mid night 00.10 AM to 07.10 AM
+struct Time activeHourStartTime = {0, 10};
+struct Time activeHourEndTime = {7, 10};
+
+// Switch off the fan for 30 minutes only
+struct startEndTime offTimeArray[3] = {{0, 30, 1, 0}, {2, 30, 3, 0}, {4, 30, 5, 0}};
+
+// Indicate (boolean) if time if greater/less than given time
+bool diffBtwTimePeriod(struct Time start, struct Time end) {
+   while (end.minutes > start.minutes) {
+      --start.hours;
+      start.minutes += 60;
+   }
+
+   return (start.hours - end.hours) >= 0;
+}
+
+// Return true if current time falls between active hours
+bool isActiveHours() {
+    return diffBtwTimePeriod({currentTime.hour(), currentTime.minute()}, activeHourStartTime) && diffBtwTimePeriod(activeHourEndTime, {currentTime.hour(), currentTime.minute()});
+}
+
+// For RTC module setup
+void rtcSetup() {
+    Serial.println("rtcSetup :: Health status check");
+    delay(1000);
+
+    if (!rtc.begin()) {
+        Serial.println("rtcSetup :: Couldn't find RTC");
+        Serial.flush();
+        while (1) delay(10);
+    }
+
+    if (!rtc.isrunning()) {
+        Serial.println("rtcSetup :: RTC is NOT running, Please uncomment below lines to set the time!");
+        // When time needs to be set on a new device, or after a power loss, the
+        // following line sets the RTC to the date & time this sketch was compiled
+        //rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+
+        // This line sets the RTC with an explicit date & time, for example to set
+        // January 21, 2014 at 3am you would call:
+        // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
+    }
+
+    Serial.println("rtcSetup :: RTC is running fine and Current time >");
+    currentTime = rtc.now();
+    Serial.print(currentTime.hour());
+    Serial.print(":");
+    Serial.print(currentTime.minute());
+    Serial.print(":");
+    Serial.print(currentTime.second());
+}
+
 void setup() {
     // ESP8266 have 512 bytes of internal EEPROM
     EEPROM.begin(512);
     Serial.begin(9600);
 
+    // Setup the RTC mmodule
+    rtcSetup();
     IR.enableIRIn();
 
     pinMode(fanRelay, OUTPUT);
@@ -101,7 +173,12 @@ void turnDevice(int deviceRelayName, int turndeviceON) {
     writeMemory(deviceRelayName == D3 ? fanMemAddr : tubeMemAddr, turndeviceON);
 }
 
+bool activateFanAutomationFlag = false;
+
 void loop() {
+    // get the fresh time stamp
+    currentTime = rtc.now();
+
     // Handles all Infrared remote operations
     if (IR.decode()) {
         Serial.println(IR.decodedIRData.decodedRawData, HEX);
@@ -111,6 +188,10 @@ void loop() {
         if (IR.decodedIRData.decodedRawData == 0xF30CFF00) {
             turnDevice(fanRelay, 1);
             Serial.println("Button 1 pressed");
+            // If fan switched on during the active hour, we need to start the fan automation
+            if (isActiveHours()) {
+                activateFanAutomationFlag = true;
+            }
         }
 
         // Switch Off the FAN When IR remote button 2 is pressed
@@ -170,6 +251,10 @@ void loop() {
       // Set the flag false
       isTubelightOn = false;
       delay(100);
+  }
+
+  if (activateFanAutomationFlag && isFanOn == false) {
+
   }
 
   delay(500);
