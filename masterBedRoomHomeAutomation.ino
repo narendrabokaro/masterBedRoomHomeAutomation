@@ -2,7 +2,8 @@
   Filename - MBR and GBR switch remote - NodeMCU version
   Description - Designed for special requirement where master switch panel is not easily accessible.
   Requirement -
-    > Maintain the device state inside ESP 8266 EEPROM memory.
+    > On/ Off on certain time during night time, only activate when fan switched ON using IR remote
+    > POC - Start monitoring the night time room temperature on every hour and write some logic to decide fan off time. 
   version - 3.0.0
  *************************************************************/
 // For RTC module (DS1307)
@@ -14,8 +15,8 @@
 // D1 (SCL) and D2 (SDA) allotted to RTC module DS1307 (I2C support)
 RTC_DS1307 rtc;
 DateTime currentTime;
-// X (Left - GPIO, Middle - GND, Right - VCC)
-// Reciver GPIO pin 
+// IR receiver design - X (Left - GPIO, Middle - GND, Right - VCC)
+// IR Reciver GPIO pin connected to D7 of NodeMCU 
 IRrecv IR(D7);
 
 #define fanRelay D3
@@ -23,16 +24,19 @@ IRrecv IR(D7);
 #define fanSwitch D5
 #define tubeLightSwitch D6
 
-// Tell whether FAN/ Tubeligh are On/ Off
-bool isFanOn = false;
+// Indicate whether fan/ tubelight switched ON by pressing the wall switch
+bool isFanOnByWallSwitch = false;
+bool isTubeOnByWallSwitch = false;
+
+// Indicate current fan state
 bool isFanRunning = false;
-bool isTubelightOn = false;
+// Indicate whether fan switched ON by pressing the IR remote
 bool isFanSwitchedOnUsingRemote = false;
+// Indicate timer state
 bool isTimerSet = false;
-
+// Decide whether memory write operation required
 bool ignoreMemWrite = true;
-
-
+// Store the ON/ OFF timer
 long int onTimer = 0;
 long int offTimer = 0;
 
@@ -54,18 +58,32 @@ struct Time {
 struct Time activeHourStartTime = {0, 1}; // 0.1 am
 struct Time activeHourEndTime = {7, 50};    // 7.50 am
 
-// Int turndeviceON [0 to switch OFF the device | 1 to switch ON the device]
+/*
+* @function turnDevice
+* @description Turn device ON/ OFF by making relay HIGH/ LOW
+* @param {int} deviceRelayName Store the GIPO pin number
+* @param {int} turndeviceON [0 to switch OFF the device | 1 to switch ON the device]
+* @param {bool} ignoreMemWrite Indicate if we require to skip memory write operation. Default is false
+*/
 void turnDevice(int deviceRelayName, int turndeviceON, bool ignoreMemWrite = false) {
-    // Turn ON/ OFF the devices
+    // Turn ON/ OFF the devices [Turn ON the device by making relay LOW | Turn OFF the device by making relay HIGH]
     digitalWrite(deviceRelayName, turndeviceON ? LOW : HIGH);
 
     if (!ignoreMemWrite) {
         // Now read/ write from memory
-        writeMemory(deviceRelayName == D3 ? fanMemAddr : tubeMemAddr, turndeviceON);
+        writeMemory(deviceRelayName == fanRelay ? fanMemAddr : tubeMemAddr, turndeviceON);
     }
 }
 
 // Indicate (boolean) if time is greater/less than given time
+
+/*
+* @function diffBtwTimePeriod
+* @description Check if time is greater/less than given time
+* @param {Time struct} start Store the start time in HH and MM
+* @param {Time struct} end Store the end time in HH and MM
+* @return {boolean} Indicate whether given time is greater
+*/
 bool diffBtwTimePeriod(struct Time start, struct Time end) {
     while (end.minutes > start.minutes) {
       --start.hours;
@@ -76,9 +94,13 @@ bool diffBtwTimePeriod(struct Time start, struct Time end) {
 }
 
 // Return true if current time falls between active hours
+/*
+* @function isActiveHours
+* @description Check if current time falls between start time and end time
+* @return {boolean} true if current time falls between active hours
+* TODO : Open issue - Unable to detect if start time = 22:00 (10.00 PM) and end time is 7:10 (7.10 AM)
+*/
 bool isActiveHours() {
-    // Serial.println(diffBtwTimePeriod({currentTime.hour(), currentTime.minute()}, activeHourStartTime));
-    // Serial.println(diffBtwTimePeriod(activeHourEndTime, {currentTime.hour(), currentTime.minute()}));
     return diffBtwTimePeriod({currentTime.hour(), currentTime.minute()}, activeHourStartTime) && diffBtwTimePeriod(activeHourEndTime, {currentTime.hour(), currentTime.minute()});
 }
 
@@ -96,6 +118,7 @@ void writeMemory(int addr, int writeValue) {
         Serial.println(writeValue);
         // Write the memory address
         EEPROM.write(addr, writeValue);
+        // Commit the changes
         EEPROM.commit();
     }
 }
@@ -213,36 +236,41 @@ void loop() {
     if (IR.decode()) {
         Serial.println(IR.decodedIRData.decodedRawData, HEX);
 
-        // TODO - Read and write the approriate code for buttons
         // Switch On the FAN When IR remote button 1 is pressed
         if (IR.decodedIRData.decodedRawData == 0xF30CFF00) {
+            // Turn fan ON/ OFF and update the memory address
             turnDevice(fanRelay, 1);
-
             // writeMemory(fanSwitchedOnUsingRemoteAddr, 1);
-            Serial.println("Button 1 pressed");
             // Set the flag true
             isFanSwitchedOnUsingRemote = true;
             isFanRunning = true;
+            Serial.println("Button 1 pressed");
         }
 
         // Switch Off the FAN When IR remote button 2 is pressed
         if (IR.decodedIRData.decodedRawData == 0xE718FF00) {
+            // Turn fan ON/ OFF and update the memory address
             turnDevice(fanRelay, 0);
             // writeMemory(fanSwitchedOnUsingRemoteAddr, 0);
-            Serial.println("Button 2 pressed");
-            // Set the flag false
+
+            // Fan running status
             isFanRunning = false;
+            // Set true if fan is switched On by IR remote
             isFanSwitchedOnUsingRemote = false;
+
+            Serial.println("Button 2 pressed");
         }
 
         // Switch On the TubeLight When IR remote button 3 is pressed
         if (IR.decodedIRData.decodedRawData == 0xA15EFF00) {
+            // Turn tubelight ON/ OFF and update the memory address
             turnDevice(tubeLightRelay, 1);
             Serial.println("Button 3 pressed");
         }
 
         // Switch Off the Tubelight When IR remote button 4 is pressed
         if (IR.decodedIRData.decodedRawData == 0xF708FF00) {
+            // Turn tubelight ON/ OFF and update the memory address
             turnDevice(tubeLightRelay, 0);
             Serial.println("Button 4 pressed");
             // isFanSwitchedOnUsingRemote = false;
@@ -253,52 +281,58 @@ void loop() {
 
   // Handles all wall switch operations
   // when FAN switch ON
-  if (digitalRead(fanSwitch) == LOW && !isFanOn) {
-      // Turn ON the device by making relay LOW
-      // Turn OFF the device by making relay HIGH
+  if (digitalRead(fanSwitch) == LOW && !isFanOnByWallSwitch) {
+      
+      // Turn fan ON/ OFF and update the memory address
       turnDevice(fanRelay, 1);
-
-      // Indicate that fan is switched on by pressing wall Switch 
       // writeMemory(fanSwitchedOnUsingRemoteAddr, 0);
       Serial.println("Fan switch pressed ON");
 
-      // Set the flag true
-      isFanOn = true;
-      isFanRunning = isFanOn;
+      // Set true if fan switched On by pressing the wall switch
+      isFanOnByWallSwitch = true;
+      // Fan running status
+      isFanRunning = true;
+      // Set true if fan is switched On by IR remote
       isFanSwitchedOnUsingRemote = false;
   }
 
   // when FAN switch OFF
-  if (digitalRead(fanSwitch) == HIGH && isFanOn) {
+  if (digitalRead(fanSwitch) == HIGH && isFanOnByWallSwitch) {
+      // Turn fan ON/ OFF and update the memory address
       turnDevice(fanRelay, 0);
       Serial.println("Fan switch pressed OFF");
 
-      // Set the flag false
-      isFanOn = false;
-      isFanRunning = isFanOn;
+      // Set true if fan switched On by pressing the wall switch
+      isFanOnByWallSwitch = false;
+      // Fan running status
+      isFanRunning = false;
+      // standard delay of 100ms
       delay(100);
   }
 
   // when TubeLight switch ON
-  if (digitalRead(tubeLightSwitch) == LOW && !isTubelightOn) {
+  if (digitalRead(tubeLightSwitch) == LOW && !isTubeOnByWallSwitch) {
+      // Turn tubelight ON/ OFF and update the memory address
       turnDevice(tubeLightRelay, 1);
+      // Set true if tubelight switched On by pressing the wall switch
+      isTubeOnByWallSwitch = true;
       Serial.println("Tubelight switch pressed ON");
-      // Set the flag true
-      isTubelightOn = true;
   }
 
   // when TubeLight switch OFF
-  if (digitalRead(tubeLightSwitch) == HIGH && isTubelightOn) {
+  if (digitalRead(tubeLightSwitch) == HIGH && isTubeOnByWallSwitch) {
+      // Turn tubelight ON/ OFF and update the memory address
       turnDevice(tubeLightRelay, 0);
+      // Set true if tubelight switched On by pressing the wall switch
+      isTubeOnByWallSwitch = false;
       Serial.println("Tubelight switch pressed OFF");
-      // Set the flag false
-      isTubelightOn = false;
+      // Standard delay 100ms
       delay(100);
   }
 
   // To start night automation, check for active hours
   if (isActiveHours() && isFanSwitchedOnUsingRemote) {
-      // when both timer not set
+      // when timer not set
       if (!isTimerSet) {
           if (isFanRunning) {
               offTimerBlock();
@@ -321,6 +355,5 @@ void loop() {
       }
   }
 
-  // isFanRunning = isFanOn;
-  delay(500);
+  delay(300);
 }
