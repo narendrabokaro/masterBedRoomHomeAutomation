@@ -55,8 +55,13 @@ struct Time {
 };
 
 // Active hours - Mid night 00.10 AM to 07.10 AM
-struct Time activeHourStartTime = {0, 1}; // 0.1 am
-struct Time activeHourEndTime = {7, 50};    // 7.50 am
+struct Time activeHourStartTime = {0, 30}; // 12.30 pm
+struct Time activeHourEndTime = {6, 00};    // 6.00 am
+
+// 1 hours = 60 min = 3600 seconds
+int onTimerDuration = 3600;
+// 1/2 hours = 30 min = 1800 seconds
+int offTimerDuration = 1800;
 
 /*
 * @function turnDevice
@@ -205,14 +210,9 @@ void setup() {
     actionBasedOnDeviceState();
 }
 
-// 5 min for Fan On
-int onTimerLimit = 180;
-// 2 min for Fan Off
-int offTimerLimit = 120;
-
 void onTimerBlock() {
     isTimerSet = true;
-    onTimer = now() + onTimerLimit;   // 1 hours = 60 min = 3600 seconds
+    onTimer = now() + onTimerDuration;
     // Turn on fan
     turnDevice(fanRelay, 1);
     offTimer = 0;
@@ -221,7 +221,7 @@ void onTimerBlock() {
 
 void offTimerBlock() {
     isTimerSet = true;
-    offTimer = now() + offTimerLimit;   // 1/2 hours = 30 min = 1800 seconds
+    offTimer = now() + offTimerDuration;
     // Turn off fan
     turnDevice(fanRelay, 0);
     onTimer = 0;
